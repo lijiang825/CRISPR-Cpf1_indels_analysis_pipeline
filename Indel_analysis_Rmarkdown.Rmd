@@ -1,0 +1,188 @@
+---
+title: "Indel_analysis_Rmarkdown"
+author: "Li Jiang"
+date: "1/18/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(reshape2)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+In a typical .sam file, the CIGAR string represents mapping of a read to the reference genome. For example, 46M6D119M is a CIGAR string, which means for a read with length 165, the first 45 bases match the reference genome, then 6 bases deletion and then 119 bases match the reference genome. Another example, 46M2I117M, means 46 matches, 2 insertions and 117 matches. Sizes of indels can be directed measured from CIGAR string, while positions of the indels can be estimated because our experiments are targeted sequencing, so the position of guide RNA and the relative position of the read to guide RNA is also known. Hence, the sizes of deletion specifically in the guide RNA can also be estimated.
+
+The previous script "VariantCalling.py" scans through CIGAR strings in each file and outputs sizes and positions of indels, as well as sizes of deletion in the guide RNA, stored in a .csv file. It also reports a summary of total number of reads, mutations, deletions, insertions, unique indel patterns and frequency of mutations for subsequent analysis. This example shows analysis of Cpf1-induced indels in the target sequence of GFP. 
+
+## Data import 
+
+```{r import input data}
+csvFileNames = list.files(path="./data/", pattern = "*.csv")
+sampleNames = c("WT_AGAT", "RR_AGAT", "RVR_AGAT", "WT_TTTA", "RR_TCCA", "RVR_TATT", "RR_ACCC", 
+                "RVR_TACA", "RVR_AATA", "Control_Control")
+csvFileList = list()
+
+for (i in 1:length(csvFileNames)){
+  csvFileList[[i]] = read.csv(paste0("./data/",csvFileNames[i]),stringsAsFactors = F)
+}
+names(csvFileList) = sampleNames
+pattern = "eGFP"
+```
+
+The raw .csv files for 10 different conditions are imported into a list. The list is named after the condition for each experiment. The characters before "_" denotes different Cpf1 variants while the characters after "_" denotes different direct repeat variants. 
+
+## A glimpse of the raw data
+```{r most frequent indels}
+## Check out top 15 most frequent indels 
+for (i in 1:length(csvFileList)){
+  print(names(csvFileList)[i])
+  print(head(sort(table(csvFileList[[i]][1]),decreasing=TRUE),15))
+}
+```
+
+The top 15 most frequent indels, represented as CIGAR strings are shown for each sample. 
+
+```{r most frequent indel sizes and positions}
+## Top N most frequent indel size/position 
+indelTop = list(numeric(),numeric(),numeric())
+indelTopFreq = list(numeric(),numeric(),numeric())
+topN = 5
+
+for (i in csvFileList){
+  for (j in c(3:5)){
+    temp = sort(table(i[,j]),decreasing=T)
+    tempTop = names(temp)[1:topN]
+    tempTopFreq = temp[tempTop]/sum(temp)
+    indelTop[[j-2]] = c(indelTop[[j-2]], tempTop)
+    indelTopFreq[[j-2]] = c(indelTopFreq[[j-2]], unname(tempTopFreq))
+  }
+} 
+
+sampleNameDf = rep(names(csvFileList),rep(topN,length(csvFileList)))
+indelTopDf = data.frame(sampleNameDf, indelTop[[1]], indelTopFreq[[1]], 
+                        indelTop[[2]], indelTopFreq[[2]], 
+                        indelTop[[3]], indelTopFreq[[3]])
+colnames(indelTopDf) = c("sample", "indel_size", "indel_size_freq", 
+                         "indel_position", "indel_position_freq", 
+                         "indel_size_in_guide",  "indel_size_in_guide_freq")
+indelTopDf
+```
+
+Then the top 5 most frequent indel sizes and positions are shown for each sample. Deletions are shown as negative numbers while insertions are shown as positive numbers. 
+
+```{r echo=FALSE}
+## Max range of indel size/position for xlim of histogram
+maxRange = c(0,0,0)
+xlim=list()
+for (i in csvFileList){
+  for (j in c(3:5)){
+    currentRange = max(i[,j]) - min(i[,j])
+    if (currentRange > maxRange[j-2]){
+      maxRange[j-2] = currentRange
+      xlim[[j-2]] = c(min(i[,j]),max(i[,j]))
+    }
+  }
+}
+
+## Generate output path
+outputPath = paste0(getwd(),"/","figures")
+if (!file.exists(outputPath)){
+  dir.create(outputPath)
+}
+if (pattern == "Cpf1"){
+  title = "Guide Template"
+}else{
+  title = "eGFP Target"
+}
+```
+
+## Summary of total reads, mutations and frequency of mutations
+
+```{r meta-data}
+## Indel frequency
+metaFileNames = list.files(path="./data/", pattern = "*.meta")
+metaFileList = list()
+metaCombined = NULL
+## Read each meta file into a list and then combine into a single data frame
+for (i in 1:length(csvFileList)){
+  metaFileList[[i]] = read.csv(paste0("./data/",metaFileNames[i]),stringsAsFactors = F)
+  metaCombined = rbind(metaCombined,metaFileList[[i]][1,])
+}
+colnames(metaCombined) = c("sumReads","sumMutations","sumDeletions","sumInsertions", "mutationFreq", "uniqueIndel")
+metaCombined$sample = factor(names(csvFileList), level = names(csvFileList))
+metaCombined$deletionFreq = metaCombined$sumDeletions/metaCombined$sumReads
+metaCombined$insertionFreq = metaCombined$sumInsertions/metaCombined$sumReads
+metaCombined
+```
+
+The total number of reads, mutations, deletions, insertions, unique indel patterns as well as the frequency of mutations, deletions and insertions are summarized into a single data frame. 
+
+## Barplot of overall indel frequencies 
+```{r histogram of indel frequencies}
+delIns = metaCombined[,c("deletionFreq", "insertionFreq", "sample")]
+colnames(delIns) = c("Deletion", "Insertion", "Sample")
+delIns = melt(delIns)
+ggplot(data=delIns,aes(x=Sample,y=value, fill=variable)) + geom_col() + coord_flip() + ggtitle(title) + ylim(0,0.4) +
+        ylab ("Indel Frequency") + xlab("Constructs") + theme(plot.title = element_text(hjust = 0.5,face="bold",
+        size=20), axis.text=element_text(size=10), axis.title=element_text(size=15,face="bold")) + theme_bw() +       guides(fill=guide_legend(title="Mutation type"))
+```
+
+All Cpf1 variants with WT direct repeat sequences show normal editing frequencies in GFP (20-30%), which is comparable to reported frequencies, while All Cpf1 variants with any mutated directed repeat show almost very low editing frequencies, indicating that mutations in direct repeat abolish Cpf1 activities. 
+
+## Total number of unique indels 
+```{r unique indels}
+ggplot(data=metaCombined,aes(x=sample,y=uniqueIndel)) + geom_col() + coord_flip() + ggtitle(title) + ylim(0,1000) +
+        ylab ("Number of unique indels") + xlab("Constructs") + theme(plot.title = element_text(hjust = 0.5,
+        face="bold", size=20), axis.text=element_text(size=10), axis.title=element_text(size=15,face="bold")) + theme_bw()
+```
+
+The total number of unique indels is a surrogate estimate of total diversity of Cpf1 induced indels. For experiments with relatively high Cpf1 activity, 500-700 unique edit patterns are observed. 
+
+```{r echo = FALSE}
+## Concatenate all datasets
+dataCombined = NULL
+for (i in 1:length(csvFileList)){
+  temp = csvFileList[[i]]
+  temp$sample = names(csvFileList)[i]
+  dataCombined = rbind(dataCombined,temp)
+}
+dataCombined$sample = factor(dataCombined$sample,level=names(csvFileList))
+```
+
+
+## Distribution of indel sizes 
+```{r Histogram for indel size}
+## Histogram for indel size
+ggplot(data=dataCombined, aes(size)) + geom_histogram() + facet_wrap(~sample) + ggtitle(title) + theme_bw() + 
+        theme(plot.title = element_text(hjust = 0.5,face="bold", size=20), axis.text=element_text(size=6), 
+              axis.title=element_text(size=15,face="bold")) + xlim(range(dataCombined$size)) + 
+              xlab("Size of indels (bp)")
+```
+
+The Most frequent sizes for deletions are 1, 3, 4, 6, 9, while the most frequent sizes for insertions are 4 (mostly observed in the two Cpf1 variants). The distribution appears to be consistent with reported patterns. 
+
+## Distribution of indel positions 
+```{r Histogram for indel position}
+## Histogram for indel position
+ggplot(data=dataCombined, aes(position)) + geom_histogram() + facet_wrap(~sample) + ggtitle(title) + theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5,face="bold", size=20), axis.text=element_text(size=6), 
+        axis.title=element_text(size=15,face="bold")) + xlim(range(dataCombined$position)) + 
+        xlab("Position of indels relative to 3' of guide (bp)")
+```
+
+The indel position is computed as the distance from the mid point of indels to 3’ of the target sequence. For WT direct repeat, most indels lie at 1-3bp flanking 3’ of the target sequence, indicating that most indels occur at 3' of the target sequence.
+
+## Distribution of deletions in the guide RNA 
+```{r Histogram for deletions in the guide RNA}
+ggplot(data=dataCombined, aes(delGuide)) + geom_histogram() + facet_wrap(~sample) + ggtitle(title) + theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5,face="bold", size=20), axis.text=element_text(size=6), 
+        axis.title=element_text(size=15,face="bold")) + xlim(range(dataCombined$delGuide)) + 
+        xlab("Deletions in guide sequence (bp)")
+```
+
+The most frequent sizes of deletions in the target sequence are 4-8 bases, indicating that most deletions result in partial deletions in the target sequence. 
+
+## Conclusion
+Cpf1 is able to induce indels in the target of integrated GFP sequence in human leukemia cells, but it is not very instrumental as a system for CPRISPR-based evolving lineage tracing.
